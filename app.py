@@ -2,18 +2,18 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
+import time
 
-# PAGE CONFIG
+
 st.set_page_config(
     page_title="NSE Portfolio Analyzer",
-    page_icon="📈",
+    page_icon="NSE(NIFTY50)",
     layout="wide"
 )
 
-# CUSTOM CSS
+
 st.markdown("""
 <style>
-
 .main {
     background-color: #0e1117;
 }
@@ -28,19 +28,16 @@ h1, h2, h3 {
     border-radius: 15px;
     margin-bottom: 15px;
     color: white;
-    box-shadow: 0px 4px 10px rgba(0,0,0,0.3);
 }
-
 </style>
 """, unsafe_allow_html=True)
 
-# TITLE
-st.title("📈 NSE Stock Portfolio Analyzer")
 
-st.write("Analyze live NSE stock data, technical indicators, and company financials.")
+st.title("NSE Stock Portfolio Analyzer")
+st.write("Analyze live NSE stock data, technical indicators, and risk metrics.")
 
-# NIFTY 50 STOCKS
-example_stocks = [
+
+stocks = [
     "ADANIENT", "ADANIPORTS", "APOLLOHOSP", "ASIANPAINT",
     "AXISBANK", "BAJAJ-AUTO", "BAJFINANCE", "BAJAJFINSV",
     "BEL", "BHARTIARTL", "BPCL", "BRITANNIA",
@@ -56,173 +53,139 @@ example_stocks = [
     "TITAN", "TRENT", "ULTRACEMCO", "WIPRO"
 ]
 
-# SIDEBAR
+
 st.sidebar.header("🔍 Search Stock")
 
-selected = st.sidebar.selectbox(
-    "Choose NIFTY 50 Company",
-    example_stocks
-)
+selected = st.sidebar.selectbox("Choose NSE Stock", stocks)
+custom = st.sidebar.text_input("Or Enter NSE Symbol", selected)
 
-custom_stock = st.sidebar.text_input(
-    "Or Enter NSE Symbol",
-    selected
-)
-
-# FORMAT STOCK SYMBOL
-stock = custom_stock.upper()
+stock = custom.upper()
 
 if not stock.endswith(".NS"):
     stock += ".NS"
 
-# HELPER FUNCTIONS
-def safe_get(value):
 
-    if value is None:
-        return "Data Not Available"
+# ---------------- SAFE CR FORMAT (FIXED) ----------------
+def format_cr(value):
+    try:
+        if pd.isna(value):
+            return "N/A"
+        if isinstance(value, (int, float)):
+            return f"{value / 1e7:,.2f} Cr"
+        return value
+    except:
+        return "N/A"
 
-    return value
 
-def format_crore(value):
-
-    if isinstance(value, (int, float)):
-
-        value = value / 10000000
-
-        return f"₹ {value:,.2f} Cr"
-
-    return value
-
-# FETCH DATA
 if stock:
 
-    with st.spinner("Fetching market data..."):
+    with st.spinner("Fetching stock data..."):
 
         try:
-
             company = yf.Ticker(stock)
 
-            info = company.info
+            # retry history
+            for i in range(3):
+                try:
+                    history = company.history(period="1y")
+                    if not history.empty:
+                        break
+                except:
+                    time.sleep(2)
+            else:
+                st.error("Failed to fetch stock data.")
+                st.stop()
 
-            # COMPANY INFO
-            company_name = safe_get(info.get("longName"))
-            current_price = safe_get(info.get("currentPrice"))
-            pe_ratio = safe_get(info.get("trailingPE"))
-            roe = safe_get(info.get("returnOnEquity"))
-            debt_equity = safe_get(info.get("debtToEquity"))
-            net_margin = safe_get(info.get("profitMargins"))
+            # ---------------- FUNDAMENTALS ----------------
+            info = {}
+            try:
+                info = company.info
+            except:
+                info = {}
 
-            st.subheader(company_name)
+            def safe(v):
+                if v is None:
+                    return "N/A"
+                if isinstance(v, (int, float)):
+                    return round(v, 2)
+                return v
 
-            # METRICS
-            metrics = {
-                "Current Price": current_price,
-                "P/E Ratio": pe_ratio,
-                "ROE": roe,
-                "Debt to Equity": debt_equity,
-                "Net Profit Margin": net_margin
-            }
+            pe_ratio = safe(info.get("trailingPE"))
+            roe = safe(info.get("returnOnEquity"))
+            debt_equity = safe(info.get("debtToEquity"))
+            net_margin = safe(info.get("profitMargins"))
 
-            for key, value in metrics.items():
+            current_price = history["Close"].iloc[-1]
 
-                st.markdown(f"""
-                <div class="metric-card">
-                    <h3>{key}</h3>
-                    <h2>{value}</h2>
-                </div>
-                """, unsafe_allow_html=True)
+            st.subheader(stock)
 
-            # STOCK HISTORY
-            st.subheader("📊 Stock Price Analysis")
+            col1, col2 = st.columns(2)
+            col1.metric("Current Price", f"₹ {current_price:.2f}")
+            col2.metric("P/E Ratio", pe_ratio)
 
-            history = company.history(period="1y")
+            st.metric("ROE", roe)
+            st.metric("Debt to Equity", debt_equity)
+            st.metric("Net Profit Margin", net_margin)
 
-            # MOVING AVERAGES
-            history["20 Day MA"] = history["Close"].rolling(window=20).mean()
-            history["50 Day MA"] = history["Close"].rolling(window=50).mean()
-            history["100 Day MA"] = history["Close"].rolling(window=100).mean()
+            # ---------------- TECHNICALS ----------------
+            history["20 MA"] = history["Close"].rolling(20).mean()
+            history["50 MA"] = history["Close"].rolling(50).mean()
+            history["100 MA"] = history["Close"].rolling(100).mean()
 
-            # PLOTLY CHART
+            history["Daily Return"] = history["Close"].pct_change()
+
+            volatility = history["Daily Return"].std() * (252 ** 0.5)
+            cumulative_return = (history["Close"].iloc[-1] / history["Close"].iloc[0]) - 1
+
+            col2.metric("Cumulative Return", f"{cumulative_return:.2%}")
+            st.metric("Annualized Volatility", f"{volatility:.2%}")
+
+            # ---------------- CHART ----------------
             fig = go.Figure()
 
-            # CLOSE PRICE
             fig.add_trace(go.Scatter(
                 x=history.index,
                 y=history["Close"],
-                mode='lines',
-                name='Close Price',
-                line=dict(color='cyan', width=3)
+                name="Close Price"
             ))
 
-            # 20 MA
             fig.add_trace(go.Scatter(
                 x=history.index,
-                y=history["20 Day MA"],
-                mode='lines',
-                name='20 Day MA',
-                line=dict(color='lime', width=2)
+                y=history["20 MA"],
+                name="20 MA"
             ))
 
-            # 50 MA
             fig.add_trace(go.Scatter(
                 x=history.index,
-                y=history["50 Day MA"],
-                mode='lines',
-                name='50 Day MA',
-                line=dict(color='orange', width=2)
+                y=history["50 MA"]
             ))
 
-            # 100 MA
             fig.add_trace(go.Scatter(
                 x=history.index,
-                y=history["100 Day MA"],
-                mode='lines',
-                name='100 Day MA',
-                line=dict(color='red', width=2)
+                y=history["100 MA"]
             ))
 
             fig.update_layout(
                 template="plotly_dark",
-                height=600,
-                xaxis_title="Date",
-                yaxis_title="Stock Price",
-                legend_title="Indicators"
+                height=600
             )
 
             st.plotly_chart(fig, use_container_width=True)
 
-            # QUARTERLY RESULTS
-            st.subheader("📅 Quarterly Financial Results")
+            # ---------------- FINANCIALS (FIXED ₹ CR) ----------------
+            st.subheader("Financial Data (₹ Cr)")
 
             quarterly = company.quarterly_financials
+            annual = company.financials
 
-            if not quarterly.empty:
+            if quarterly is not None and not quarterly.empty:
+                st.write("Quarterly Financials")
+                st.dataframe(quarterly.map(format_cr))
 
-                quarterly = quarterly.map(format_crore)
-
-                st.dataframe(quarterly)
-
-            else:
-
-                st.warning("Quarterly data unavailable.")
-
-            # ANNUAL RESULTS
-            st.subheader("📈 Annual Financial Results")
-
-            financials = company.financials
-
-            if not financials.empty:
-
-                financials = financials.map(format_crore)
-
-                st.dataframe(financials)
-
-            else:
-
-                st.warning("Annual financial data unavailable.")
+            if annual is not None and not annual.empty:
+                st.write("Annual Financials")
+                st.dataframe(annual.map(format_cr))
 
         except Exception as e:
-
             st.error("Could not fetch stock data.")
-
             st.write(e)
